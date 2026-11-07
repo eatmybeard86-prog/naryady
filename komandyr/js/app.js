@@ -97,7 +97,7 @@ function buildIndex() {
 }
 
 /* ---------- автоматичний розподіл ---------- */
-function evaluate(p, t, d, ix, winFrom, winTo, ignoreKey) {
+function evaluate(p, t, d, ix, winFrom, winTo, ignoreKey, slot) {
   // повертає {ok, level, why, score...}; level: 0 — ідеально, 1 — порушено відпочинок, 2 — сусідній день, 9 — неможливо
   var r = { p: p, level: 0, why: '' };
   if (!p.active) { r.level = 9; r.why = 'неактивний'; return r; }
@@ -105,11 +105,18 @@ function evaluate(p, t, d, ix, winFrom, winTo, ignoreKey) {
   var ab = absentOn(p, d);
   if (ab) { r.level = 9; r.why = ab.reason + ' до ' + fmtShort(ab.to); return r; }
   var list = ix[p.id] || [];
-  var load = 0, tcnt = 0, nearest = 9999;
+  var load = 0, tcnt = 0, nearest = 9999, sameDay = false;
+  if (slot === undefined && ignoreKey) slot = parseKey(ignoreKey).slot;
+  var me = slotTimes(t, d, slot || 0);
   for (var i = 0; i < list.length; i++) {
     var e = list[i]; if (e.key === ignoreKey) continue;
     var gap = Math.abs(diffDays(e.date, d));
-    if (gap === 0) { r.level = 9; r.why = 'вже в наряді цього дня'; }
+    if (gap === 0) {
+      // кілька змін за добу дозволено, якщо вони не перетинаються в часі
+      var et0 = dtype(e.tid), ot = et0 && slotTimes(et0, e.date, parseKey(e.key).slot);
+      if (ot && ot.start < me.end && me.start < ot.end) { r.level = 9; r.why = 'перетин у часі з іншою зміною (' + hm(ot.start) + '–' + hm(ot.end) + ')'; }
+      else sameDay = true;
+    }
     if (gap < nearest) nearest = gap;
     if (e.date >= winFrom && e.date <= winTo) {
       var et = dtype(e.tid);
@@ -117,7 +124,8 @@ function evaluate(p, t, d, ix, winFrom, winTo, ignoreKey) {
     }
   }
   if (r.level === 9) return r;
-  if (nearest <= 1) { r.level = 2; r.why = 'наряд у сусідній день'; }
+  if (sameDay) { r.level = 2; r.why = 'ще одна зміна цього дня'; }
+  else if (nearest <= 1) { r.level = 2; r.why = 'наряд у сусідній день'; }
   else if (nearest <= (+t.rest || 0)) { r.level = 1; r.why = 'мало відпочинку (' + (nearest - 1) + ' дн.)'; }
   // кількість доступних днів у вікні (для справедливості щодо відпусток і новоприбулих)
   var start = p.since && p.since > winFrom ? p.since : winFrom;
@@ -138,8 +146,8 @@ function cmpCand(a, b) {
   if (a.nearest !== b.nearest) return b.nearest - a.nearest;
   return a.rnd - b.rnd;
 }
-function rankCandidates(t, d, ix, winFrom, winTo, ignoreKey) {
-  return S.people.map(function (p) { var r = evaluate(p, t, d, ix, winFrom, winTo, ignoreKey); r.rnd = Math.random(); return r; })
+function rankCandidates(t, d, ix, winFrom, winTo, ignoreKey, slot) {
+  return S.people.map(function (p) { var r = evaluate(p, t, d, ix, winFrom, winTo, ignoreKey, slot); r.rnd = Math.random(); return r; })
     .sort(function (a, b) { if (a.level === 9 || b.level === 9) return a.level - b.level; return cmpCand(a, b); });
 }
 function generate(from, to, keepManual) {
@@ -156,7 +164,7 @@ function generate(from, to, keepManual) {
       for (var s = 0; s < t.perDay; s++) {
         var key = d + '|' + t.id + '|' + s;
         if (S.A[key]) continue;
-        var c = rankCandidates(t, d, ix, winFrom, winTo)[0];
+        var c = rankCandidates(t, d, ix, winFrom, winTo, undefined, s)[0];
         if (!c || c.level === 9) { warns.push(fmtShort(d) + ' · ' + t.name + ': немає вільних людей'); continue; }
         if (c.level > 0) warns.push(fmtShort(d) + ' · ' + t.name + ': ' + shortName(c.p) + ' — ' + c.why);
         S.A[key] = { p: c.p.id };
@@ -423,7 +431,7 @@ function swapSlots(ka, kb) {
     var list = (ix[x[0].id] || []).filter(function (e) { return e.key !== x[2]; });
     var ix2 = {}; ix2[x[0].id] = list;
     var r = evaluate(x[0], t, q.date, ix2, addDays(q.date, -60), addDays(q.date, 30), x[1]);
-    if (r.level > 0) probs.push(pname(x[0]) + ' ' + fmtShort(q.date) + ': ' + r.why);
+    if (r.level === 9) probs.push(pname(x[0]) + ' ' + fmtShort(q.date) + ': ' + r.why);
   });
   if (probs.length && !confirm('Увага:\n' + probs.join('\n') + '\n\nВсе одно поміняти?')) return;
   if (pb) S.A[ka] = { p: pb.id, m: true }; else delete S.A[ka];
@@ -504,11 +512,11 @@ function applyCycle(cyc, from, to) {
       for (var s = 0; s < t.perDay; s++) {
         var pid = snap[src][t.id + '|' + s], p = pid && person(pid), key = d + '|' + t.id + '|' + s;
         if (!pid) { anyAuto = true; continue; }
-        if (p && p.active && canDo(p, t) && !absentOn(p, d) && !busy[p.id]) { S.A[key] = { p: p.id, m: true }; busy[p.id] = 1; (ix[p.id] = ix[p.id] || []).push({ date: d, tid: t.id, key: key }); continue; }
+        if (p && p.active && canDo(p, t) && !absentOn(p, d)) { S.A[key] = { p: p.id, m: true }; busy[p.id] = 1; (ix[p.id] = ix[p.id] || []).push({ date: d, tid: t.id, key: key }); continue; }
         var used = {}; for (var k2 in S.A) if (parseKey(k2).date === d) used[S.A[k2].p] = 1;
         // заміна: вільний у цей день і без шаблонної зміни сьогодні
-        var c = rankCandidates(t, d, ix, addDays(d, -30), d).filter(function (r) { return r.level < 9 && !used[r.p.id] && !inTemplateDay(snap[src], r.p.id); })[0]
-             || rankCandidates(t, d, ix, addDays(d, -30), d).filter(function (r) { return r.level < 9 && !used[r.p.id]; })[0];
+        var c = rankCandidates(t, d, ix, addDays(d, -30), d, undefined, s).filter(function (r) { return r.level < 9 && !used[r.p.id] && !inTemplateDay(snap[src], r.p.id); })[0]
+             || rankCandidates(t, d, ix, addDays(d, -30), d, undefined, s).filter(function (r) { return r.level < 9 && !used[r.p.id]; })[0];
         if (c) { S.A[key] = { p: c.p.id, m: true }; busy[c.p.id] = 1; (ix[c.p.id] = ix[c.p.id] || []).push({ date: d, tid: t.id, key: key }); }
         var ab = p && absentOn(p, d);
         warns.push(fmtShort(d) + ' · ' + t.name + ' ' + hm(slotTimes(t, d, s).start) + ': ' + shortName(p) + ' ' + (ab ? ab.reason.toLowerCase() : 'недоступний') + ' → ' + (c ? shortName(c.p) : 'немає заміни'));
@@ -797,7 +805,7 @@ function renderSettings(v) {
     (window.cordova ? '' : '<button class="btn w" id="bFile" style="margin-top:8px">⬇️ Зберегти копію файлом</button>') +
     '<div class="row" style="margin-top:8px"><button class="btn grow" id="bExp">Копіювати дані</button><button class="btn grow" id="bImp">Відновити з копії</button></div>' +
     '<button class="btn d w" id="bReset" style="margin-top:8px">Скинути всі дані</button></div>';
-  h += '<p class="mut" style="text-align:center">Графік нарядів v1.7.0 (' + (MODE === 'cmd' ? 'командир' : 'боєць') + ') · працює без інтернету, дані зберігаються лише на цьому пристрої.</p>';
+  h += '<p class="mut" style="text-align:center">Графік нарядів v1.8.0 (' + (MODE === 'cmd' ? 'командир' : 'боєць') + ') · працює без інтернету, дані зберігаються лише на цьому пристрої.</p>';
   v.innerHTML = h;
   if (MODE === 'client') { $('cUpd').onclick = importDialog; bindClientRem(); return; }
   else {
