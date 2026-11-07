@@ -326,7 +326,7 @@ function renderSched(v) {
     });
     if (!rows) continue;
     any = true;
-    h += '<div class="day' + (isWk(d) ? ' wk' : '') + (d === td ? ' today' : '') + (d < td ? ' past' : '') + '" id="d' + d + '"><div class="dh"><span>' + fmtD(d) + '</span><span class="mut">' + DOW[dow(d)] + (d === td ? ' · сьогодні' : '') + (MODE === 'cmd' ? ' <button class="btn s tplb" data-d="' + d + '" title="Повторювати цей день щодня">⧉ щодня</button>' : '') + '</span></div>' + rows + '</div>';
+    h += '<div class="day' + (isWk(d) ? ' wk' : '') + (d === td ? ' today' : '') + (d < td ? ' past' : '') + '" id="d' + d + '"><div class="dh"><span>' + fmtD(d) + '</span><span class="mut">' + DOW[dow(d)] + (d === td ? ' · сьогодні' : '') + (MODE === 'cmd' ? ' <button class="btn s tplb" data-d="' + d + '" title="Повторювати цей день (щодня, через день, цикл з кількох днів)">⧉ повторити</button>' : '') + '</span></div>' + rows + '</div>';
   }
   if (!any) h += '<div class="empty">' + (ui.filterMine ? 'У цьому місяці у вас нарядів немає.' : 'Немає активних видів нарядів.') + '</div>';
   if (MODE === 'cmd') h += '<p class="mut" style="text-align:center">Утримайте ім’я і перетягніть на інше — люди поміняються місцями (або на «+ призначити» — перенесеться). Натисніть на ім’я, щоб вибрати заміну зі списку. Зелена рамка — змінено вручну, автопідбір її не чіпає.</p>';
@@ -431,47 +431,94 @@ function swapSlots(ka, kb) {
   S.meta.unsent = true; save(); render();
   toast(pb ? 'Поміняли: ' + shortName(pa) + ' ⇄ ' + shortName(pb) : shortName(pa) + ' → ' + fmtShort(qb.date));
 }
-/* ---------- шаблон дня: ті самі люди в ті самі години щодня ---------- */
+/* ---------- шаблони днів: цикл із кількох денних графіків (А, Б, В, А, Б, В…) ---------- */
+function dayFilled(d) { var n = 0; S.types.forEach(function (t) { for (var s = 0; s < t.perDay; s++) if (S.A[d + '|' + t.id + '|' + s]) n++; }); return n; }
+function dayLabel(d) {
+  var names = [];
+  S.types.forEach(function (t) { for (var s = 0; s < t.perDay; s++) { var a = S.A[d + '|' + t.id + '|' + s]; if (a && person(a.p)) names.push(person(a.p).name); } });
+  return fmtShort(d) + ' ' + DOW[dow(d)] + ' — ' + names.slice(0, 3).join(', ') + (names.length > 3 ? '…' : '');
+}
 function templateDialog(src) {
-  var filled = 0; S.types.forEach(function (t) { for (var s = 0; s < t.perDay; s++) if (S.A[src + '|' + t.id + '|' + s]) filled++; });
-  if (!filled) { toast('Цей день порожній — спочатку заповніть його'); return; }
+  if (!dayFilled(src)) { toast('Цей день порожній — спочатку заповніть його'); return; }
+  var cands = [];
+  for (var d = addDays(monthStart(ui.month), -7); d <= addDays(monthEnd(ui.month), 7); d = addDays(d, 1)) if (dayFilled(d)) cands.push(d);
+  if (cands.indexOf(src) < 0) cands.push(src);
+  var L = 'ABCDEFGHIJKLMN'.split('').map(function (x, i) { return 'АБВГДЕЖЗИКЛМНО'[i]; });
+  function rowsHtml(n, keep) {
+    var h = '';
+    for (var i = 0; i < n; i++) {
+      var def = keep[i] !== undefined ? keep[i] : (i === 0 ? src : (dayFilled(addDays(src, i)) ? addDays(src, i) : ''));
+      h += '<div class="row" style="margin-top:6px"><span style="width:62px" class="mut">' + (i + 1) + '-й день</span><select class="tpS grow">' +
+        '<option value="">Автоматично (по черзі)</option>' +
+        cands.map(function (c) { return '<option value="' + c + '"' + (c === def ? ' selected' : '') + '>' + esc(dayLabel(c)) + '</option>'; }).join('') + '</select></div>';
+    }
+    return h;
+  }
   var to = monthEnd(ui.month); if (to <= src) to = addDays(src, 30);
-  var sh = openModal('<h3>Однаково щодня</h3><p class="mut">Розклад за <b>' + fmtD(src) + '</b> повториться на кожен день періоду: кожен солдат щодня стоїть у ті самі години.</p>' +
-    '<div class="row"><div class="grow"><label class="f">З дати</label><input type="date" id="tpF" value="' + addDays(src, 1) + '"></div><div class="grow"><label class="f">По дату</label><input type="date" id="tpT" value="' + to + '"></div></div>' +
-    '<p class="mut">Якщо хтось у відпустці чи відсутній — його зміну в цей день буде заповнено автоматично, а вас попереджено.</p>' +
-    '<button class="btn p w" id="tpGo">Повторити</button>');
+  var sh = openModal('<h3>Повторення графіка</h3><p class="mut">Задайте цикл: який денний графік ставити в 1-й, 2-й, 3-й… день. Цикл повторюватиметься весь період. Напр. «через день» — цикл 2 дні: 1-й — потрібний день, 2-й — інший графік або «Автоматично».</p>' +
+    '<label class="f">Довжина циклу, днів</label><div class="row"><button class="btn s" id="tpM">−</button><input type="number" id="tpN" min="1" max="14" value="1" style="width:70px;text-align:center"><button class="btn s" id="tpP">+</button><span class="mut grow" id="tpH"></span></div>' +
+    '<div id="tpR">' + rowsHtml(1, []) + '</div>' +
+    '<div class="row"><div class="grow"><label class="f">Почати з дати (1-й день циклу)</label><input type="date" id="tpF" value="' + addDays(src, 1) + '"></div><div class="grow"><label class="f">По дату</label><input type="date" id="tpT" value="' + to + '"></div></div>' +
+    '<p class="mut">Якщо хтось відсутній — його зміну в цей день буде заповнено автоматично, а вас попереджено.</p>' +
+    '<button class="btn p w" id="tpGo">Застосувати</button>');
+  function sel() { return Array.prototype.map.call(sh.querySelectorAll('.tpS'), function (s) { return s.value; }); }
+  function setN(n) {
+    n = Math.max(1, Math.min(14, n | 0)); var keep = sel();
+    sh.querySelector('#tpN').value = n; sh.querySelector('#tpR').innerHTML = rowsHtml(n, keep); hint();
+    Array.prototype.forEach.call(sh.querySelectorAll('.tpS'), function (s) { s.onchange = hint; });
+  }
+  function hint() {
+    var v = sel(), map = {}, k = 0;
+    var seq = v.map(function (x) { if (!x) return '·'; if (!map[x]) map[x] = L[k++] || '?'; return map[x]; });
+    sh.querySelector('#tpH').textContent = 'Цикл: ' + seq.concat(seq).concat(seq).slice(0, Math.max(6, seq.length * 2)).join(' ') + ' …' + (v.indexOf('') >= 0 ? '  (· — авто)' : '');
+  }
+  sh.querySelector('#tpM').onclick = function () { setN(+sh.querySelector('#tpN').value - 1); };
+  sh.querySelector('#tpP').onclick = function () { setN(+sh.querySelector('#tpN').value + 1); };
+  sh.querySelector('#tpN').onchange = function () { setN(+this.value); };
+  setN(1);
   sh.querySelector('#tpGo').onclick = function () {
-    var f = sh.querySelector('#tpF').value, t = sh.querySelector('#tpT').value;
+    var f = sh.querySelector('#tpF').value, t = sh.querySelector('#tpT').value, cyc = sel();
     if (!f || !t || f > t) { toast('Невірний період'); return; }
     if (diffDays(f, t) > 366) { toast('Максимум — рік'); return; }
-    ui.warnings = applyTemplate(src, f, t);
+    if (!cyc.some(Boolean)) { toast('Оберіть хоча б один денний графік'); return; }
+    ui.warnings = applyCycle(cyc, f, t);
     S.meta.unsent = true; save(); closeModal(); render();
-    toast(ui.warnings.length ? 'Готово, є заміни: ' + ui.warnings.length : 'Графік однаковий щодня ✔', 3000);
+    toast(ui.warnings.length ? 'Готово, є зауваження: ' + ui.warnings.length : 'Графік за циклом застосовано ✔', 3000);
   };
 }
-function applyTemplate(src, from, to) {
-  var warns = [];
-  for (var k in S.A) { var q = parseKey(k); if (q.date >= from && q.date <= to && q.date !== src) delete S.A[k]; }
-  var ix = buildIndex();
-  for (var d = from; d <= to; d = addDays(d, 1)) {
-    if (d === src) continue;
+function applyCycle(cyc, from, to) {
+  // знімок шаблонів до очищення періоду (шаблонні дні можуть бути всередині періоду)
+  var snap = {};
+  cyc.forEach(function (d) {
+    if (!d || snap[d]) return; snap[d] = {};
+    S.types.forEach(function (t) { for (var s = 0; s < t.perDay; s++) { var a = S.A[d + '|' + t.id + '|' + s]; if (a) snap[d][t.id + '|' + s] = a.p; } });
+  });
+  for (var k in S.A) { var q = parseKey(k); if (q.date >= from && q.date <= to) delete S.A[k]; }
+  var warns = [], ix = buildIndex(), anyAuto = false;
+  for (var d = from, i = 0; d <= to; d = addDays(d, 1), i++) {
+    var src = cyc[i % cyc.length];
+    if (!src) { anyAuto = true; continue; }
+    var busy = {};
     S.types.forEach(function (t) {
       if (!typeActive(t, d)) return;
       for (var s = 0; s < t.perDay; s++) {
-        var key = d + '|' + t.id + '|' + s, a = S.A[src + '|' + t.id + '|' + s], p = a && person(a.p);
-        if (!a) continue;
-        if (p && p.active && canDo(p, t) && !absentOn(p, d)) { S.A[key] = { p: p.id, m: true }; (ix[p.id] = ix[p.id] || []).push({ date: d, tid: t.id, key: key }); continue; }
-        // заміна відсутнього: найменш завантажений вільний у цей день
-        var busy = {}; for (var k2 in S.A) if (parseKey(k2).date === d) busy[S.A[k2].p] = 1;
-        var c = rankCandidates(t, d, ix, addDays(d, -30), d).filter(function (r) { return r.level < 9 && !busy[r.p.id]; })[0];
-        if (c) { S.A[key] = { p: c.p.id, m: true }; (ix[c.p.id] = ix[c.p.id] || []).push({ date: d, tid: t.id, key: key }); }
+        var pid = snap[src][t.id + '|' + s], p = pid && person(pid), key = d + '|' + t.id + '|' + s;
+        if (!pid) { anyAuto = true; continue; }
+        if (p && p.active && canDo(p, t) && !absentOn(p, d) && !busy[p.id]) { S.A[key] = { p: p.id, m: true }; busy[p.id] = 1; (ix[p.id] = ix[p.id] || []).push({ date: d, tid: t.id, key: key }); continue; }
+        var used = {}; for (var k2 in S.A) if (parseKey(k2).date === d) used[S.A[k2].p] = 1;
+        // заміна: вільний у цей день і без шаблонної зміни сьогодні
+        var c = rankCandidates(t, d, ix, addDays(d, -30), d).filter(function (r) { return r.level < 9 && !used[r.p.id] && !inTemplateDay(snap[src], r.p.id); })[0]
+             || rankCandidates(t, d, ix, addDays(d, -30), d).filter(function (r) { return r.level < 9 && !used[r.p.id]; })[0];
+        if (c) { S.A[key] = { p: c.p.id, m: true }; busy[c.p.id] = 1; (ix[c.p.id] = ix[c.p.id] || []).push({ date: d, tid: t.id, key: key }); }
         var ab = p && absentOn(p, d);
         warns.push(fmtShort(d) + ' · ' + t.name + ' ' + hm(slotTimes(t, d, s).start) + ': ' + shortName(p) + ' ' + (ab ? ab.reason.toLowerCase() : 'недоступний') + ' → ' + (c ? shortName(c.p) : 'немає заміни'));
       }
     });
   }
+  if (anyAuto) warns = warns.concat(generate(from, to, true));
   return warns;
 }
+function inTemplateDay(map, pid) { for (var k in map) if (map[k] === pid) return true; return false; }
 function genDialog() {
   if (!S.people.length) { toast('Спочатку додайте особовий склад'); return; }
   var from = monthStart(ui.month), to = monthEnd(ui.month), td = today();
@@ -750,7 +797,7 @@ function renderSettings(v) {
     (window.cordova ? '' : '<button class="btn w" id="bFile" style="margin-top:8px">⬇️ Зберегти копію файлом</button>') +
     '<div class="row" style="margin-top:8px"><button class="btn grow" id="bExp">Копіювати дані</button><button class="btn grow" id="bImp">Відновити з копії</button></div>' +
     '<button class="btn d w" id="bReset" style="margin-top:8px">Скинути всі дані</button></div>';
-  h += '<p class="mut" style="text-align:center">Графік нарядів v1.6.0 (' + (MODE === 'cmd' ? 'командир' : 'боєць') + ') · працює без інтернету, дані зберігаються лише на цьому пристрої.</p>';
+  h += '<p class="mut" style="text-align:center">Графік нарядів v1.7.0 (' + (MODE === 'cmd' ? 'командир' : 'боєць') + ') · працює без інтернету, дані зберігаються лише на цьому пристрої.</p>';
   v.innerHTML = h;
   if (MODE === 'client') { $('cUpd').onclick = importDialog; bindClientRem(); return; }
   else {
