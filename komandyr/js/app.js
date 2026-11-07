@@ -78,9 +78,25 @@ function slotTimes(t, d, slot) {
 }
 function hm(x) { return pad(x.getHours()) + ':' + pad(x.getMinutes()); }
 function span(t, d, slot) {
-  // «з 08:00 по 12:00», а якщо закінчується/починається іншого дня — з датою
-  var r = slotTimes(t, d, slot), sd = ds(r.start), ed = ds(r.end);
-  return 'з ' + hm(r.start) + (sd !== d ? ' (' + fmtShort(sd) + ')' : '') + ' по ' + hm(r.end) + (ed !== sd ? ' (' + fmtShort(ed) + ')' : '');
+  // «з 04:00 по 08:00»; зміна завжди показується в день, коли людина заступає
+  var r = slotTimes(t, d, slot);
+  return 'з ' + hm(r.start) + ' по ' + hm(r.end) + (r.end - r.start >= 864e5 ? ' наст. дня' : '');
+}
+function startDate(t, d, slot) { return ds(slotTimes(t, d, slot).start); }
+/* усі зміни, що ПОЧИНАЮТЬСЯ в календарний день d (нічні зміни попередньої доби теж тут) */
+function dayEntries(d) {
+  var out = [];
+  [addDays(d, -1), d].forEach(function (dd) {
+    S.types.forEach(function (t, ti) {
+      if (!typeActive(t, dd)) return;
+      for (var s = 0; s < t.perDay; s++) {
+        var st = slotTimes(t, dd, s); if (ds(st.start) !== d) continue;
+        var key = dd + '|' + t.id + '|' + s;
+        out.push({ key: key, t: t, ti: ti, slot: s, duty: dd, st: st, a: S.A[key] });
+      }
+    });
+  });
+  return out.sort(function (a, b) { return a.ti - b.ti || a.st.start - b.st.start; });
 }
 function weightOf(t, d) { return shiftLen(t); } // навантаження = фактичні години на одну особу
 function parseKey(k) { var a = k.split('|'); return { date: a[0], tid: a[1], slot: +a[2] }; }
@@ -246,18 +262,18 @@ function scheduleReminders() {
       if (cli) {
         remOffsets().forEach(function (mins) {
           var tt = new Date(start.getTime() - mins * 6e4);
-          if (tt > now && tt < horizon) items.push(nItem(id++, '⏰ ' + (mins >= 60 && mins % 60 === 0 ? 'За ' + (mins / 60) + ' год' : 'За ' + mins + ' хв') + ' — наряд: ' + G.t.name, fmtD(G.d) + ', ' + span(G.t, G.d, G.slot), tt));
+          if (tt > now && tt < horizon) items.push(nItem(id++, '⏰ ' + (mins >= 60 && mins % 60 === 0 ? 'За ' + (mins / 60) + ' год' : 'За ' + mins + ' хв') + ' — наряд: ' + G.t.name, fmtD(startDate(G.t, G.d, G.slot)) + ', ' + span(G.t, G.d, G.slot), tt));
         });
         return;
       }
       var hb = +S.set.hoursBefore;
       if (hb > 0) {
         var t1 = new Date(start.getTime() - hb * 36e5);
-        if (t1 > now && t1 < horizon) items.push(nItem(id++, title, who + ' — ' + fmtD(G.d) + ', ' + span(G.t, G.d, G.slot) + ' (через ' + hb + ' год)', t1));
+        if (t1 > now && t1 < horizon) items.push(nItem(id++, title, who + ' — ' + fmtD(startDate(G.t, G.d, G.slot)) + ', ' + span(G.t, G.d, G.slot) + ' (через ' + hb + ' год)', t1));
       }
       if (S.set.evening) {
-        var t2 = at(addDays(G.d, -1), S.set.eveningTime);
-        if (t2 < start && t2 > now && t2 < horizon) items.push(nItem(id++, title, 'Завтра (' + fmtD(G.d) + ') ' + span(G.t, G.d, G.slot) + ': ' + who, t2));
+        var t2 = at(addDays(startDate(G.t, G.d, G.slot), -1), S.set.eveningTime);
+        if (t2 < start && t2 > now && t2 < horizon) items.push(nItem(id++, title, 'Завтра (' + fmtD(startDate(G.t, G.d, G.slot)) + ') ' + span(G.t, G.d, G.slot) + ': ' + who, t2));
       }
     });
     items = items.slice(0, 200);
@@ -320,16 +336,16 @@ function renderSched(v) {
   if (ui.warnings.length) h += '<div class="warnbox"><b>Зауваження до розподілу (' + ui.warnings.length + '):</b><br>' + ui.warnings.slice(0, 12).map(esc).join('<br>') + (ui.warnings.length > 12 ? '<br>…' : '') + ' <br><a href="#" id="hideW" style="color:#f3d79a">Сховати</a></div>';
   var any = false;
   for (var d = from; d <= to; d = addDays(d, 1)) {
-    var rows = '';
+    var rows = '', ents = dayEntries(d);
     S.types.forEach(function (t) {
-      if (!typeActive(t, d)) return;
-      var chips = '', mine = false;
-      for (var s = 0; s < t.perDay; s++) {
-        var key = d + '|' + t.id + '|' + s, a = S.A[key], p = a && person(a.p);
+      var chips = '', mine = false, cnt = 0;
+      ents.forEach(function (e) {
+        if (e.t !== t) return; cnt++;
+        var a = e.a, p = a && person(a.p), tm = '<span class="tm">' + esc(span(t, e.duty, e.slot)) + '</span>';
         if (p && p.id === me) mine = true;
-        chips += '<span class="chip' + (p ? '' : ' e') + (a && a.m ? ' m' : '') + (p && p.id === me ? ' me' : '') + '" data-k="' + key + '">' + (p ? esc(pname(p)) + '<span class="tm">' + esc(span(t, d, s)) + '</span>' : (MODE === 'cmd' ? '+ призначити' : '—')) + '</span>';
-      }
-      if (ui.filterMine && !mine) return;
+        chips += '<span class="chip' + (p ? '' : ' e') + (a && a.m ? ' m' : '') + (p && p.id === me ? ' me' : '') + '" data-k="' + e.key + '">' + (p ? esc(pname(p)) : (MODE === 'cmd' ? '+ призначити' : '—')) + tm + '</span>';
+      });
+      if (!cnt || (ui.filterMine && !mine)) return;
       rows += '<div class="slot"><div class="t">' + esc(t.name) + '</div><div class="chips">' + chips + '</div></div>';
     });
     if (!rows) continue;
@@ -554,7 +570,7 @@ function slotDialog(key) {
   var q = parseKey(key), t = dtype(q.tid), a = S.A[key], cur = a && person(a.p);
   var ix = buildIndex();
   var c = rankCandidates(t, q.date, ix, addDays(q.date, -60), addDays(q.date, 30), key);
-  var h = '<h3>' + esc(t.name) + '</h3><div class="mut">' + fmtD(q.date) + ', ' + DOW[dow(q.date)] + ', ' + esc(span(t, q.date, q.slot)) + '</div>' +
+  var h = '<h3>' + esc(t.name) + '</h3><div class="mut">' + fmtD(startDate(t, q.date, q.slot)) + ', ' + DOW[dow(startDate(t, q.date, q.slot))] + ', ' + esc(span(t, q.date, q.slot)) + '</div>' +
     '<p>Зараз: <b>' + (cur ? esc(pname(cur)) : '— не призначено') + '</b>' + (a && a.m ? ' <span class="tag">вручну</span>' : '') + '</p>' +
     '<div class="row" style="margin-bottom:8px">' + (a ? '<button class="btn s d" id="sClr">Звільнити</button>' : '') + (a && a.m ? '<button class="btn s" id="sAuto">Дозволити автопідбір</button>' : '') + '</div>' +
     '<div class="mut" style="margin:6px 0">Оберіть заміну (зверху — найкращі кандидати):</div>';
@@ -576,17 +592,11 @@ function slotDialog(key) {
 function exportText(from, to) {
   var out = 'ГРАФІК НАРЯДІВ ' + fmtShort(from) + ' – ' + fmtShort(to) + '.' + pd(to).getFullYear() + '\n';
   for (var d = from; d <= to; d = addDays(d, 1)) {
-    var lines = [];
+    var lines = [], ents = dayEntries(d);
     S.types.forEach(function (t) {
-      if (!typeActive(t, d)) return;
-      var names = [];
-      if (isSplit(t)) {
-        lines.push('  ' + t.name + ':');
-        for (var s2 = 0; s2 < t.perDay; s2++) { var a2 = S.A[d + '|' + t.id + '|' + s2]; lines.push('    ' + span(t, d, s2) + ' — ' + (a2 ? pname(person(a2.p)) : '—')); }
-        return;
-      }
-      for (var s = 0; s < t.perDay; s++) { var a = S.A[d + '|' + t.id + '|' + s]; names.push(a ? pname(person(a.p)) : '—'); }
-      lines.push('  ' + t.name + ' (' + span(t, d, 0) + '): ' + names.join(', '));
+      var es = ents.filter(function (e) { return e.t === t; }); if (!es.length) return;
+      lines.push('  ' + t.name + ':');
+      es.forEach(function (e) { lines.push('    ' + span(t, e.duty, e.slot) + ' — ' + (e.a ? pname(person(e.a.p)) : '—')); });
     });
     if (lines.length) out += '\n' + fmtShort(d) + ' (' + DOW[dow(d)] + ')\n' + lines.join('\n');
   }
@@ -805,7 +815,7 @@ function renderSettings(v) {
     (window.cordova ? '' : '<button class="btn w" id="bFile" style="margin-top:8px">⬇️ Зберегти копію файлом</button>') +
     '<div class="row" style="margin-top:8px"><button class="btn grow" id="bExp">Копіювати дані</button><button class="btn grow" id="bImp">Відновити з копії</button></div>' +
     '<button class="btn d w" id="bReset" style="margin-top:8px">Скинути всі дані</button></div>';
-  h += '<p class="mut" style="text-align:center">Графік нарядів v1.8.0 (' + (MODE === 'cmd' ? 'командир' : 'боєць') + ') · працює без інтернету, дані зберігаються лише на цьому пристрої.</p>';
+  h += '<p class="mut" style="text-align:center">Графік нарядів v1.9.0 (' + (MODE === 'cmd' ? 'командир' : 'боєць') + ') · працює без інтернету, дані зберігаються лише на цьому пристрої.</p>';
   v.innerHTML = h;
   if (MODE === 'client') { $('cUpd').onclick = importDialog; bindClientRem(); return; }
   else {
@@ -1092,18 +1102,18 @@ function renderMine(v) {
   var td = today(), nowD = new Date(), list = myDuties(me), fut = list.filter(function (x) { return x.st.end > nowD; }), past = list.filter(function (x) { return x.st.end <= nowD; }).slice(-3).reverse();
   var h = '<div class="card"><div class="row"><div class="grow"><b>' + esc(pname(p)) + '</b><div class="mut">' + (S.meta.unit ? esc(S.meta.unit) + ' · ' : '') + 'графік від ' + fmtStamp(S.meta.ver) + '</div></div><button class="btn s" id="mUpd">📥 Оновити</button></div></div>';
   if (fut.length) {
-    var n = fut[0], days = diffDays(td, n.date), when = days === 0 ? 'Сьогодні' : days === 1 ? 'Завтра' : 'Через ' + days + ' дн.';
+    var n = fut[0], nd = ds(n.st.start), days = diffDays(td, nd), when = days === 0 ? 'Сьогодні' : days === 1 ? 'Завтра' : 'Через ' + days + ' дн.';
     var pr = partners(n, me);
-    h += '<div class="card" style="border-color:var(--acc)"><div class="mut">Найближчий наряд</div><div style="font-size:22px;font-weight:700;margin:4px 0">' + when + ', ' + fmtD(n.date) + '</div>' +
-      '<div>' + esc(n.t.name) + ' · ' + DOW[dow(n.date)] + '</div><div style="font-size:17px;font-weight:600;margin-top:4px">🕗 ' + esc(span(n.t, n.date, n.slot)) + '</div>' +
+    h += '<div class="card" style="border-color:var(--acc)"><div class="mut">Найближчий наряд</div><div style="font-size:22px;font-weight:700;margin:4px 0">' + when + ', ' + fmtD(nd) + '</div>' +
+      '<div>' + esc(n.t.name) + ' · ' + DOW[dow(nd)] + '</div><div style="font-size:17px;font-weight:600;margin-top:4px">🕗 ' + esc(span(n.t, n.date, n.slot)) + '</div>' +
       (pr.length ? '<div class="mut" style="margin-top:6px">' + pr.map(esc).join('<br>') + '</div>' : '') + '</div>';
     if (fut.length > 1) {
       h += '<div class="card"><h3>Далі</h3>';
-      fut.slice(1, 15).forEach(function (x) { h += '<div class="li"><div class="grow">' + fmtD(x.date) + ' <span class="mut">' + DOW[dow(x.date)] + '<div class="mut">' + esc(x.t.name) + '</div></div><span class="mut" style="text-align:right">' + esc(span(x.t, x.date, x.slot)) + '</span></div>'; });
+      fut.slice(1, 15).forEach(function (x) { var xd = ds(x.st.start); h += '<div class="li"><div class="grow">' + fmtD(xd) + ' <span class="mut">' + DOW[dow(xd)] + '<div class="mut">' + esc(x.t.name) + '</div></div><span class="mut" style="text-align:right">' + esc(span(x.t, x.date, x.slot)) + '</span></div>'; });
       h += '</div>';
     }
   } else h += '<div class="card"><div class="empty">Запланованих нарядів немає 👍</div></div>';
-  if (past.length) { h += '<div class="card"><h3>Останні</h3>'; past.forEach(function (x) { h += '<div class="li mut"><div class="grow">' + fmtD(x.date) + '</div><span>' + esc(x.t.name) + '</span></div>'; }); h += '</div>'; }
+  if (past.length) { h += '<div class="card"><h3>Останні</h3>'; past.forEach(function (x) { h += '<div class="li mut"><div class="grow">' + fmtD(ds(x.st.start)) + '</div><span>' + esc(x.t.name) + '</span></div>'; }); h += '</div>'; }
   h += '<div id="permBox"></div><div class="mut" style="text-align:center;margin-top:6px">🔔 Нагадування за ' + remLabel() + ' до кожного наряду</div>';
   v.innerHTML = h;
   checkPermBanner($('permBox'));

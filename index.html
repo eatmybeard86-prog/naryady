@@ -2,6 +2,7 @@
 <html lang="uk">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
 <title>Графік нарядів</title>
@@ -77,7 +78,7 @@ function decode(text){
 }
 function isSplit(t){return !!t.split&&t.perDay>1}
 function slotTimes(t,d,slot){var a=(t.start||'08:00').split(':'),st=pd(d);st.setHours(+a[0]||0,+a[1]||0,0,0);var len=(+t.hours||24)/(isSplit(t)?t.perDay:1)*36e5;if(isSplit(t))st=new Date(st.getTime()+(slot||0)*len);return{start:st,end:new Date(st.getTime()+len)}}
-function span(t,d,slot){var r=slotTimes(t,d,slot),sd=ds(r.start),ed=ds(r.end);return 'з '+hm(r.start)+(sd!==d?' ('+fmtShort(sd)+')':'')+' по '+hm(r.end)+(ed!==sd?' ('+fmtShort(ed)+')':'')}
+function span(t,d,slot){var r=slotTimes(t,d,slot);return 'з '+hm(r.start)+' по '+hm(r.end)+(r.end-r.start>=864e5?' наст. дня':'')}
 function pname(p){return p?((p.rank?p.rank+' ':'')+p.name):'—'}
 function load(o){
   O=o;T={};P={};A={};
@@ -105,17 +106,21 @@ function render(){
     else{
       var now=new Date(),list=myList(),fut=list.filter(function(x){return x.st.end>now});
       if(fut.length){
-        var n=fut[0],dd=Math.round((pd(n.date)-pd(today()))/864e5),when=dd===0?'Сьогодні':dd===1?'Завтра':'Через '+dd+' дн.';
-        h+='<div class="card next"><div class="mut">Найближчий наряд</div><div class="big">'+when+', '+fmtD(n.date)+'</div><div>'+esc(n.t.name)+' · '+DOW[dow(n.date)]+'</div><div style="font-size:17px;font-weight:600;margin-top:4px">🕗 '+esc(span(n.t,n.date,n.slot))+'</div></div>';
-        h+='<div class="card"><h3>Усі мої наряди</h3>'+fut.map(function(x){return '<div class="li"><div>'+fmtD(x.date)+' <span class="mut">'+DOW[dow(x.date)]+'</span><div class="mut">'+esc(x.t.name)+'</div></div><div class="mut" style="text-align:right">'+esc(span(x.t,x.date,x.slot))+'</div></div>'}).join('')+'</div>';
+        var n=fut[0],nd=ds(n.st.start),dd=Math.round((pd(nd)-pd(today()))/864e5),when=dd===0?'Сьогодні':dd===1?'Завтра':'Через '+dd+' дн.';
+        h+='<div class="card next"><div class="mut">Найближчий наряд</div><div class="big">'+when+', '+fmtD(nd)+'</div><div>'+esc(n.t.name)+' · '+DOW[dow(nd)]+'</div><div style="font-size:17px;font-weight:600;margin-top:4px">🕗 '+esc(span(n.t,n.date,n.slot))+'</div></div>';
+        h+='<div class="card"><h3>Усі мої наряди</h3>'+fut.map(function(x){var xd=ds(x.st.start);return '<div class="li"><div>'+fmtD(xd)+' <span class="mut">'+DOW[dow(xd)]+'</span><div class="mut">'+esc(x.t.name)+'</div></div><div class="mut" style="text-align:right">'+esc(span(x.t,x.date,x.slot))+'</div></div>'}).join('')+'</div>';
         h+='<div class="card"><h3>📅 Нагадування на iPhone / в календарі</h3><div class="mut">Додайте свої наряди в календар телефону — він нагадає за '+remLabel()+' до початку.</div><button class="btn" id="ics">Додати мої наряди в календар</button></div>';
       } else h+='<div class="card mut">Запланованих нарядів немає 👍</div>';
     }
   } else {
-    var t0=today(),days=Object.keys(O.D).sort().filter(function(d){return d>=addDays(t0,-1)});
+    var t0=today(),keys=Object.keys(O.D).sort(),days=[];
+    if(keys.length)for(var dd0=t0>keys[0]?t0:keys[0];dd0<=addDays(keys[keys.length-1],1);dd0=addDays(dd0,1))days.push(dd0);
     days.forEach(function(d){
       var rows='';
-      Object.keys(T).forEach(function(tid){var t=T[tid],chips='';for(var s=0;s<t.perDay;s++){var pid=A[d+'|'+tid+'|'+s];if(!pid)continue;chips+='<span class="chip'+(pid===me?' me':'')+'">'+esc(pname(P[pid]))+'<span class="tm">'+esc(span(t,d,s))+'</span></span>'}if(chips)rows+='<div class="slot"><div class="t">'+esc(t.name)+'</div><div class="chips">'+chips+'</div></div>'});
+      Object.keys(T).forEach(function(tid){var t=T[tid],es=[];[addDays(d,-1),d].forEach(function(du){for(var s=0;s<t.perDay;s++){var pid=A[du+'|'+tid+'|'+s];if(!pid)continue;var st=slotTimes(t,du,s);if(ds(st.start)!==d)continue;es.push({pid:pid,du:du,s:s,st:st})}});
+        es.sort(function(a,b){return a.st.start-b.st.start});
+        var chips=es.map(function(e){return '<span class="chip'+(e.pid===me?' me':'')+'">'+esc(pname(P[e.pid]))+'<span class="tm">'+esc(span(t,e.du,e.s))+'</span></span>'}).join('');
+        if(chips)rows+='<div class="slot"><div class="t">'+esc(t.name)+'</div><div class="chips">'+chips+'</div></div>'});
       if(rows)h+='<div class="day'+(dow(d)%6===0?' wk':'')+(d===t0?' today':'')+'"><div class="dh"><span>'+fmtD(d)+'</span><span class="mut">'+DOW[dow(d)]+(d===t0?' · сьогодні':'')+'</span></div>'+rows+'</div>';
     });
   }
