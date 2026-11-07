@@ -49,7 +49,7 @@ var MG = ['січня','лютого','березня','квітня','трав�
 var B62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 var CODE_RE = /NARYAD([12])([zj]):([A-Za-z0-9_\-]+)/;
 var LS = 'naryadyWeb';
-var O, T = {}, P = {}, A = {}, me = '', mode = 'mine';
+var O, T = {}, P = {}, A = {}, me = '', mode = 'mine', CUR = '';
 function pad(n){return (n<10?'0':'')+n}
 function ds(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
 function pd(s){var a=s.split('-');return new Date(+a[0],+a[1]-1,+a[2])}
@@ -92,7 +92,12 @@ function render(){
   var v=document.getElementById('v');
   document.getElementById('ttl').textContent='Графік нарядів'+(O.u?' · '+O.u:'');
   document.getElementById('sub').textContent='Оновлено командиром: '+fmtStamp(O.s);
-  var h='<div class="card"><h3>Хто ви?</h3><select id="who"><option value="">— оберіть себе —</option>'+
+  var h='';
+  if(/Android/i.test(navigator.userAgent)&&CUR){
+    var fb=encodeURIComponent(location.href.split('#')[0]+'#'+CUR);
+    h+='<div class="card next"><h3>📲 Є застосунок «Наряди · Боєць»?</h3><div class="mut">Відкрийте графік у застосунку — нагадування встановляться автоматично.</div><a class="btn" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box" href="intent://import?c='+CUR+'#Intent;scheme=naryad;package=ua.mil.naryady;S.browser_fallback_url='+fb+';end">Відкрити в застосунку</a></div>';
+  }
+  h+='<div class="card"><h3>Хто ви?</h3><select id="who"><option value="">— оберіть себе —</option>'+
     Object.keys(P).map(function(k){return P[k]}).sort(function(a,b){return a.name.localeCompare(b.name,'uk')}).map(function(p){return '<option value="'+esc(p.id)+'"'+(p.id===me?' selected':'')+'>'+esc(pname(p))+'</option>'}).join('')+'</select></div>';
   h+='<div class="seg"><button data-m="mine" class="'+(mode==='mine'?'on':'')+'">Мої наряди</button><button data-m="all" class="'+(mode==='all'?'on':'')+'">Увесь графік</button></div>';
   if(mode==='mine'){
@@ -144,7 +149,7 @@ function fail(msg){document.getElementById('v').innerHTML='<div class="warn">'+m
       var prev=0;try{prev=JSON.parse(lsGet('ver')||'0')}catch(e){}
       if(o.s>=prev){lsSet('code',src);lsSet('ver',JSON.stringify(o.s))}
     }
-    load(o);render();
+    CUR=(CODE_RE.exec(src)||[''])[0];load(o);render();
   }).catch(function(e){fail(e.message==='old'?'Браузер застарілий. Оновіть його (iOS 16.4+ / Chrome 80+).':'Посилання пошкоджене. Попросіть командира надіслати графік знову.')});
 })();
 </script>
