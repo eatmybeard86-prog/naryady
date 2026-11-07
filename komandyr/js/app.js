@@ -326,7 +326,7 @@ function renderSched(v) {
     });
     if (!rows) continue;
     any = true;
-    h += '<div class="day' + (isWk(d) ? ' wk' : '') + (d === td ? ' today' : '') + (d < td ? ' past' : '') + '" id="d' + d + '"><div class="dh"><span>' + fmtD(d) + '</span><span class="mut">' + DOW[dow(d)] + (d === td ? ' · сьогодні' : '') + '</span></div>' + rows + '</div>';
+    h += '<div class="day' + (isWk(d) ? ' wk' : '') + (d === td ? ' today' : '') + (d < td ? ' past' : '') + '" id="d' + d + '"><div class="dh"><span>' + fmtD(d) + '</span><span class="mut">' + DOW[dow(d)] + (d === td ? ' · сьогодні' : '') + (MODE === 'cmd' ? ' <button class="btn s tplb" data-d="' + d + '" title="Повторювати цей день щодня">⧉ щодня</button>' : '') + '</span></div>' + rows + '</div>';
   }
   if (!any) h += '<div class="empty">' + (ui.filterMine ? 'У цьому місяці у вас нарядів немає.' : 'Немає активних видів нарядів.') + '</div>';
   if (MODE === 'cmd') h += '<p class="mut" style="text-align:center">Утримайте ім’я і перетягніть на інше — люди поміняються місцями (або на «+ призначити» — перенесеться). Натисніть на ім’я, щоб вибрати заміну зі списку. Зелена рамка — змінено вручну, автопідбір її не чіпає.</p>';
@@ -338,7 +338,7 @@ function renderSched(v) {
   if (me) { $('fAll').onclick = function () { ui.filterMine = false; render(); }; $('fMine').onclick = function () { ui.filterMine = true; render(); }; }
   if ($('hideW')) $('hideW').onclick = function (e) { e.preventDefault(); ui.warnings = []; render(); };
   Array.prototype.forEach.call(v.querySelectorAll('.chip'), function (c) { if (MODE === 'cmd') c.onclick = function () { if (drag.justDropped) return; slotDialog(c.dataset.k); }; });
-  if (MODE === 'cmd') enableDrag(v);
+  if (MODE === 'cmd') { enableDrag(v); Array.prototype.forEach.call(v.querySelectorAll('.tplb'), function (b) { b.onclick = function () { templateDialog(b.dataset.d); }; }); }
   if (m === monthStart(td) && $('d' + td) && !ui.scrolled) { ui.scrolled = true; setTimeout(function () { var el = $('d' + td); if (el) window.scrollTo(0, el.offsetTop - 70); }, 50); }
 }
 /* ---------- перетягування: утримайте ім'я і перетягніть на інше — люди поміняються місцями ---------- */
@@ -430,6 +430,47 @@ function swapSlots(ka, kb) {
   S.A[kb] = { p: pa.id, m: true };
   S.meta.unsent = true; save(); render();
   toast(pb ? 'Поміняли: ' + shortName(pa) + ' ⇄ ' + shortName(pb) : shortName(pa) + ' → ' + fmtShort(qb.date));
+}
+/* ---------- шаблон дня: ті самі люди в ті самі години щодня ---------- */
+function templateDialog(src) {
+  var filled = 0; S.types.forEach(function (t) { for (var s = 0; s < t.perDay; s++) if (S.A[src + '|' + t.id + '|' + s]) filled++; });
+  if (!filled) { toast('Цей день порожній — спочатку заповніть його'); return; }
+  var to = monthEnd(ui.month); if (to <= src) to = addDays(src, 30);
+  var sh = openModal('<h3>Однаково щодня</h3><p class="mut">Розклад за <b>' + fmtD(src) + '</b> повториться на кожен день періоду: кожен солдат щодня стоїть у ті самі години.</p>' +
+    '<div class="row"><div class="grow"><label class="f">З дати</label><input type="date" id="tpF" value="' + addDays(src, 1) + '"></div><div class="grow"><label class="f">По дату</label><input type="date" id="tpT" value="' + to + '"></div></div>' +
+    '<p class="mut">Якщо хтось у відпустці чи відсутній — його зміну в цей день буде заповнено автоматично, а вас попереджено.</p>' +
+    '<button class="btn p w" id="tpGo">Повторити</button>');
+  sh.querySelector('#tpGo').onclick = function () {
+    var f = sh.querySelector('#tpF').value, t = sh.querySelector('#tpT').value;
+    if (!f || !t || f > t) { toast('Невірний період'); return; }
+    if (diffDays(f, t) > 366) { toast('Максимум — рік'); return; }
+    ui.warnings = applyTemplate(src, f, t);
+    S.meta.unsent = true; save(); closeModal(); render();
+    toast(ui.warnings.length ? 'Готово, є заміни: ' + ui.warnings.length : 'Графік однаковий щодня ✔', 3000);
+  };
+}
+function applyTemplate(src, from, to) {
+  var warns = [];
+  for (var k in S.A) { var q = parseKey(k); if (q.date >= from && q.date <= to && q.date !== src) delete S.A[k]; }
+  var ix = buildIndex();
+  for (var d = from; d <= to; d = addDays(d, 1)) {
+    if (d === src) continue;
+    S.types.forEach(function (t) {
+      if (!typeActive(t, d)) return;
+      for (var s = 0; s < t.perDay; s++) {
+        var key = d + '|' + t.id + '|' + s, a = S.A[src + '|' + t.id + '|' + s], p = a && person(a.p);
+        if (!a) continue;
+        if (p && p.active && canDo(p, t) && !absentOn(p, d)) { S.A[key] = { p: p.id, m: true }; (ix[p.id] = ix[p.id] || []).push({ date: d, tid: t.id, key: key }); continue; }
+        // заміна відсутнього: найменш завантажений вільний у цей день
+        var busy = {}; for (var k2 in S.A) if (parseKey(k2).date === d) busy[S.A[k2].p] = 1;
+        var c = rankCandidates(t, d, ix, addDays(d, -30), d).filter(function (r) { return r.level < 9 && !busy[r.p.id]; })[0];
+        if (c) { S.A[key] = { p: c.p.id, m: true }; (ix[c.p.id] = ix[c.p.id] || []).push({ date: d, tid: t.id, key: key }); }
+        var ab = p && absentOn(p, d);
+        warns.push(fmtShort(d) + ' · ' + t.name + ' ' + hm(slotTimes(t, d, s).start) + ': ' + shortName(p) + ' ' + (ab ? ab.reason.toLowerCase() : 'недоступний') + ' → ' + (c ? shortName(c.p) : 'немає заміни'));
+      }
+    });
+  }
+  return warns;
 }
 function genDialog() {
   if (!S.people.length) { toast('Спочатку додайте особовий склад'); return; }
@@ -709,7 +750,7 @@ function renderSettings(v) {
     (window.cordova ? '' : '<button class="btn w" id="bFile" style="margin-top:8px">⬇️ Зберегти копію файлом</button>') +
     '<div class="row" style="margin-top:8px"><button class="btn grow" id="bExp">Копіювати дані</button><button class="btn grow" id="bImp">Відновити з копії</button></div>' +
     '<button class="btn d w" id="bReset" style="margin-top:8px">Скинути всі дані</button></div>';
-  h += '<p class="mut" style="text-align:center">Графік нарядів v1.5.0 (' + (MODE === 'cmd' ? 'командир' : 'боєць') + ') · працює без інтернету, дані зберігаються лише на цьому пристрої.</p>';
+  h += '<p class="mut" style="text-align:center">Графік нарядів v1.6.0 (' + (MODE === 'cmd' ? 'командир' : 'боєць') + ') · працює без інтернету, дані зберігаються лише на цьому пристрої.</p>';
   v.innerHTML = h;
   if (MODE === 'client') { $('cUpd').onclick = importDialog; bindClientRem(); return; }
   else {
